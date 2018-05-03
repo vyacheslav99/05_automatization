@@ -15,16 +15,17 @@ def main():
     args = ap.parse_args()
 
     logging.basicConfig(**config.LOGGING)
+    server = HTTPServer("127.0.0.1", args.port, config.ARCHITECT, config.INIT_HANDLERS,
+                        config.MAX_HANDLERS, config.DOCUMENT_ROOT)
 
-    try:
-        server = HTTPServer("localhost", args.port, config.ARCHITECT, config.INIT_HANDLERS,
-                            config.MAX_HANDLERS, config.DOCUMENT_ROOT)
-        logging.info("Starting server at %s" % args.port)
-        server.start()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.close()
+    logging.info("Starting server at %s" % args.port)
+    # try:
+    server.start()
+    # except KeyboardInterrupt:
+    #     pass
+    # finally:
+    #     server.close()
+
     logging.info("Server stopped")
 
 if __name__ == '__main__':
