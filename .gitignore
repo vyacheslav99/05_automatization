@@ -2,3 +2,5 @@
 logs/
 *.pyc
 *.bat
+tests/
+config.py
