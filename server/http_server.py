@@ -3,6 +3,7 @@
 import socket
 import select
 import errno
+import logging
 
 
 A_ASYNCHRONOUS = 'asynchronous'
@@ -26,30 +27,47 @@ CONN_STATE_SEND_WAITING = 2
 CONN_STATE_SEND = 3
 CONN_STATE_DONE = 4
 
-class Response(object):
-    pass
-
-class Request(object):
-    pass
-
 
 class Handler(object):
-    """ Класс обработчик соединения с клиентом для асинхронного сервера """
+    """ Класс обработчик соединения с клиентом """
 
     def __init__(self, sock, client_ip, client_port):
         self.sock = sock
         self.client_ip = client_ip
         self.client_port = client_port
         self.state = CONN_STATE_READ_WAITING
-        self.request = b'' # Request()
-        self.response = b'' # Response()
+        self.request = b''
+        self.response = b''
 
     def create_response(self):
         self.response = b'Hello, {0}!'.format(self.client_ip)
 
     def read(self):
         self.state = CONN_STATE_READ
-        data = self.sock.recv(1024)  # будет Request.add() или что-то типа того, потом придумаю, как реализовать
+        # data = self.sock.recv(1024)
+        # self.request += data
+        # if len(data) < 1024 or self.request.endswith(b'\n'):
+        #     self.create_response()
+        #     self.state = CONN_STATE_SEND_WAITING
+
+    def send(self):
+        self.state = CONN_STATE_SEND
+        # n = self.sock.send(self.response)
+        # if n == len(self.response):
+        #     self.sock.shutdown(socket.SHUT_RDWR)
+        #     self.state = CONN_STATE_DONE
+        # self.response = self.response[n:]
+
+    def close(self):
+        self.sock.close()
+
+
+class AsyncHandler(Handler):
+    """ Класс обработчик соединения с клиентом для асинхронного сервера """
+
+    def read(self):
+        self.state = CONN_STATE_READ
+        data = self.sock.recv(1024)
         self.request += data
         if len(data) < 1024 or self.request.endswith(b'\n'):
             self.create_response()
@@ -63,14 +81,12 @@ class Handler(object):
             self.state = CONN_STATE_DONE
         self.response = self.response[n:]
 
-    def close(self):
-        self.sock.close()
-
 
 class BaseHTTPServer(object):
     """ Базовый класс сервера, определяющий интерфейс и реализующий часть основной функциональности, общую для всех потомков """
 
     def __init__(self, host, port, init_handlers, max_handlers, document_root):
+        self.active = False
         self.sock = None
         self.host = host
         self.port = port
@@ -84,19 +100,33 @@ class BaseHTTPServer(object):
         self.sock.bind((self.host, self.port))
         self.sock.setblocking(0) # неблокирующий сокет (по-умолчанию он блокирующий - 1)
         self.sock.listen(5)
+        logging.info('Started listening on {0}:{1}'.format(self.host, self.port))
 
     def _do_serve_forever(self):
         """ Тут должен быть реализован главный цикл сервера, вызывается из метода start() после инициализации слушающего сокета """
-        raise Exception('Method "_do_serve_forever" must be implemented!')
+        raise NotImplementedError('Method "_do_serve_forever" must be implemented!')
 
     def start(self):
-        self._init_socket()
-        self._do_serve_forever()
+        try:
+            self.active = True
+            self._init_socket()
+            self._do_serve_forever()
+        except KeyboardInterrupt:
+            logging.info('KeyboardInterrupt')
+        except Exception, e:
+            logging.exception("Unexpected error: %s" % e)
+        finally:
+            self._close()
 
-    def close(self):
+    def stop(self):
+        self.active = False
+
+    def _close(self):
+        logging.info('Stop listen on {0}:{1}'.format(self.host, self.port))
         if self.sock:
             self.sock.close()
             self.sock = None
+        self.active = False  # на всякий случай
 
 
 class AsyncHTTPServer(BaseHTTPServer):
@@ -114,9 +144,7 @@ class AsyncHTTPServer(BaseHTTPServer):
         self.epoll.register(self.sock.fileno(), select.EPOLLIN)
 
     def _do_serve_forever(self):
-        while True:
-            # проверяем, какие произошли события, параметр "1" - время ожидания событий в сек.
-            # возвращает последовательность кортежей (fileno, event_code)
+        while self.active:
             for fileno, event in self.epoll.poll(1):
                 if fileno == self.sock.fileno():
                     # по слушающему сокету пришло новое соединение, принимаем его
@@ -129,36 +157,34 @@ class AsyncHTTPServer(BaseHTTPServer):
 
                     conn.setblocking(0)
                     if len(self.connects) == self.max_handlers:
-                        # если кол-во обрабатываемых соединений достигло предела - сбрасываем
                         conn.close()
+                        logging.info('Reset connection on {0}:{1}: limit connections exceeded'.format(addr[0], addr[1]))
                     else:
-                        # подписываем новое соединение на входящие события в epoll
                         self.epoll.register(conn.fileno(), select.EPOLLIN)
-                        self.connects[conn.fileno()] = Handler(conn, addr[0], addr[1])
+                        self.connects[conn.fileno()] = AsyncHandler(conn, addr[0], addr[1])
+                        logging.info('Accepted connection on {0}:{1}'.format(addr[0], addr[1]))
                 elif event == select.EPOLLIN:
-                    # пришли данные от клиентского соединения - нужно принять их и записать в соотв. место
                     self.connects[fileno].read()
                     if self.connects[fileno].state == CONN_STATE_SEND_WAITING:
-                        # "переводим коннект в состояние приема" (точнее начинаем слушать от него событие готовности принимать данные)
                         self.epoll.modify(fileno, select.EPOLLOUT)
                 elif event == select.EPOLLOUT:
-                    # на клиенте произошло событие записи (т.е. он готов принимать данные - ответ от сервера)
                     self.connects[fileno].send()
-                    # если отправили все - отписываем коннект от прослушивания всех типов событий
                     if self.connects[fileno].state == CONN_STATE_DONE:
                         self.epoll.modify(fileno, 0)
                 elif event == select.EPOLLHUP:
-                    # это событие означает, что клиент отключился - надо закрыть соединение с ним
                     self.epoll.unregister(fileno)
                     self.connects[fileno].close()
                     del connects[fileno]
 
-    def close(self):
+    def _close(self):
         if self.epoll:
             self.epoll.unregister(self.sock.fileno())
+            for fileno in self.connects:
+                self.epoll.unregister(fileno)
+                self.connects[fileno].close()
             self.epoll.close()
             self.epoll = None
-        super(AsyncHTTPServer, self).close()
+        super(AsyncHTTPServer, self)._close()
 
 
 class ThreadingHTTPServer(BaseHTTPServer):
