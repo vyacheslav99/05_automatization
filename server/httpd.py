@@ -18,14 +18,8 @@ def main():
     server = HTTPServer("127.0.0.1", args.port, config.ARCHITECT, config.INIT_HANDLERS,
                         config.MAX_HANDLERS, config.DOCUMENT_ROOT)
 
-    logging.info("Starting server at %s" % args.port)
-    # try:
+    logging.info("Starting server...")
     server.start()
-    # except KeyboardInterrupt:
-    #     pass
-    # finally:
-    #     server.close()
-
     logging.info("Server stopped")
 
 if __name__ == '__main__':
