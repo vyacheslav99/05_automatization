@@ -15,8 +15,7 @@ def main():
     args = ap.parse_args()
 
     logging.basicConfig(**config.LOGGING)
-    server = HTTPServer("127.0.0.1", args.port, config.ARCHITECT, config.INIT_HANDLERS,
-                        config.MAX_HANDLERS, config.DOCUMENT_ROOT)
+    server = HTTPServer("127.0.0.1", args.port, config.INIT_HANDLERS, config.MAX_HANDLERS, config.DOCUMENT_ROOT)
 
     logging.info("Starting server...")
     server.start()
