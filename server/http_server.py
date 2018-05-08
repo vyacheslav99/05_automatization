@@ -29,7 +29,7 @@ class Worker(object):
 
         try:
             self.__handler = self.HandlerClass(self.sock, self.client_ip, self.client_port)
-            self.__handler.start()
+            self.__handler.handle_request()
         finally:
             logging.info('[{0}] Stopped connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
             self._reset()
