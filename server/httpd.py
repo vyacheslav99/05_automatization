@@ -5,7 +5,6 @@ import argparse
 
 import config
 from http_server import HTTPServer
-from handler import Handler
 
 
 def main():
@@ -16,7 +15,7 @@ def main():
     args = ap.parse_args()
 
     logging.basicConfig(**config.LOGGING)
-    server = HTTPServer("127.0.0.1", args.port, Handler, args.workers, config.MAX_HANDLERS, args.doc_root)
+    server = HTTPServer("127.0.0.1", args.port, args.workers, config.MAX_HANDLERS)
 
     logging.info("Starting server...")
     server.start()
