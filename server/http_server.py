@@ -5,58 +5,64 @@ import errno
 import logging
 import threading
 
-from handler import Handler, Response
+from handler import Handler
 
 
 class Worker(object):
 
     def __init__(self, index):
         self.id = index
+        self.sock = None
         self.__thread = None
         self._reset()
         self.init_thread()
 
     def _reset(self):
-        self.__stopped = True
         self.__handler = None
-        self.sock = None
         self.client_ip = None
         self.client_port = None
+        self.__stopped = True
 
     def _do_process(self):
-        logging.info('[{0}] Accepted connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
+        logging.debug('[{0}] Accepted connection on {1}:{2}'.format(self.__thread.name, self.client_ip, self.client_port))
         self.__stopped = False
         self.__ready = False
 
-        try:
-            self.__handler = Handler(self.sock, self.client_ip, self.client_port)
-            self.__handler.handle_request()
-        finally:
-            logging.info('[{0}] Stopped connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
-            self._reset()
+        self.__handler = Handler(self.__thread.name, self.sock, self.client_ip, self.client_port)
+        self.__handler.handle_request()
+
+        logging.debug('[{0}] Stopped connection on {1}:{2}'.format(self.__thread.name, self.client_ip, self.client_port))
+        self._reset()
 
     def init_thread(self):
         self.__thread = threading.Thread(target=self._do_process)
         self.__thread.setDaemon(1)
         self.__ready = True
+        logging.debug('Initialized Thread Name: {0}'.format(self.__thread.name))
 
     def accept(self, sock, client_ip, client_port):
-        if not self.is_free():
-            raise Exception('Worker {0} not ready to accept connections!'.format(self.id))
-
+        # if not self.is_free():
+        #     raise Exception('Worker {0} not ready to accept connections!'.format(self.__thread.name))
         self.sock = sock
         self.client_ip = client_ip
         self.client_port = client_port
 
     def start(self):
-        self.__thread.start()
+        try:
+            self.__thread.start()
+        except RuntimeError:
+            self.stop()
+            self.init_thread()
 
     def stop(self):
         if self.__handler:
             self.__handler.stop()
 
         if self.__thread and self.__thread.isAlive():
-            self.__thread.join()
+            self.__thread.join(3)
+
+        if self.sock:
+            self.sock.close()
 
         self.__thread = None
 
@@ -83,7 +89,6 @@ class HTTPServer(object):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
-        #self.sock.setblocking(0)
         self.sock.listen(5)
         self.sock.settimeout(1)
         logging.info('Started listening on {0}:{1}'.format(self.host, self.port))
@@ -163,7 +168,7 @@ class HTTPServer(object):
             self._do_serve_forever()
         except KeyboardInterrupt:
             logging.info('KeyboardInterrupt')
-        except Exception, e:
+        except Exception as e:
             logging.exception("Unexpected error: %s" % e)
         finally:
             self._close()
@@ -175,10 +180,9 @@ class HTTPServer(object):
         logging.info('Stop listen on {0}:{1}'.format(self.host, self.port))
         if self.sock:
             self.sock.close()
-            self.sock = None
 
         if self.wrk_svc_thread and self.wrk_svc_thread.isAlive():
-            self.wrk_svc_thread.join()
+            self.wrk_svc_thread.join(3)
 
         for wrk in self.wrk_pool:
             wrk.stop()

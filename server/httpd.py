@@ -13,9 +13,10 @@ def main():
     ap.add_argument("--workers", "-w", type=int, action="store", default=config.INIT_HANDLERS)
     ap.add_argument("--doc_root", "-r", type=str, action="store", default=config.DOCUMENT_ROOT)
     args = ap.parse_args()
+    config.DOCUMENT_ROOT = args.doc_root
 
     logging.basicConfig(**config.LOGGING)
-    server = HTTPServer("127.0.0.1", args.port, args.workers, config.MAX_HANDLERS)
+    server = HTTPServer(config.LISTEN_ADDR, args.port, args.workers, config.MAX_HANDLERS)
 
     logging.info("Starting server...")
     server.start()

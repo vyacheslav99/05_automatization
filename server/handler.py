@@ -5,6 +5,10 @@ import logging
 import datetime
 import mimetypes
 import traceback
+import urllib2
+import time
+import socket
+import errno
 
 import config
 
@@ -35,6 +39,8 @@ class Request(object):
             for param in params:
                 p, v = param.split('=', 1)
                 self._params[p] = v
+
+        self._uri = urllib2.unquote(self._uri)
 
         data.pop(0)
         while True:
@@ -136,23 +142,26 @@ class Response(object):
 class Handler(object):
     """ Класс обработчик соединения с клиентом """
 
-    __log_format_str = '[RESP] - {client_ip}:{client_port} "{method} {uri} {protocol}" {code} {len_response}'
+    __log_format_str = '[{thread_id}] - {client_ip}:{client_port} "{method} {uri} {protocol}" {code} {len_response}'
 
     __index_page_tmpl = '\r\n'.join(('<!doctype html>', '<html>', '<head>', '<meta content="text/html; charset=utf-8">',
                                      '<title>Content of directory "{directory}"</title>', '</head>', '<body>',
                                      '<h3>Content of directory "{directory}"</h3>',
-                                     '<table border="1", bordercolor="whitesmoke", cellspacing="0" cellpadding="3">', '<thead>',
-                                     '<tr>', '<td>File Name</td>', '<td>Type</td>', '<td>Size</td>', '<td>Created</td>', '<td>Modified</td>',
-                                     '</tr>', '</thead>', '<tbody>', '{tbody}', '</tbody>', '</table>', '</body>', '</html>'))
+                                     '<table border="1", bordercolor="whitesmoke", cellspacing="0" cellpadding="3">',
+                                     '<thead>', '<tr>', '<td>File Name</td>', '<td>Type</td>', '<td>Size</td>',
+                                     '<td>Created</td>', '<td>Modified</td>', '</tr>', '</thead>', '<tbody>', '{tbody}',
+                                     '</tbody>', '</table>', '</body>', '</html>'))
 
     __table_row_tmpl = '\r\n'.join((
-        '<tr>', '<td>{file_name}</td>', '<td>{file_type}</td>', '<td>{file_size}</td>', '<td>{fcreated}</td>', '<td>{fmodified}</td>', '</tr>'))
+        '<tr>', '<td>{file_name}</td>', '<td>{file_type}</td>', '<td>{file_size}</td>', '<td>{fcreated}</td>',
+        '<td>{fmodified}</td>', '</tr>'))
 
     __error_page_tmpl = '\r\n'.join(('<!doctype html>', '<html>', '<head>', '<meta content="text/html; charset=utf-8">',
-                                     '<title>{code} {title}</title>', '</head>', '<body>', '<h1>{title}</h1>', '<p>', '{error_message}',
-                                     '</p>', '</body>', '</html>'))
+                                     '<title>{code} {title}</title>', '</head>', '<body>', '<h1>{title}</h1>', '<p>',
+                                     '{error_message}', '</p>', '</body>', '</html>'))
 
-    def __init__(self, sock, client_ip, client_port):
+    def __init__(self, thread_id, sock, client_ip, client_port):
+        self.id = thread_id
         self.__can_stop = False
         self.sock = sock
         self.client_ip = client_ip
@@ -193,38 +202,50 @@ class Handler(object):
     def _render_directory_index(self, path):
         files = []
         folders = []
+
+        up_path = path.replace(config.DOCUMENT_ROOT, '')
+        if up_path and up_path != '/':
+            up_path = os.path.split(up_path)[0]
+        folders.append(self.__table_row_tmpl.format(
+            file_name='<a href={0}>{1}</a>'.format(urllib2.quote(up_path) or '/', '..'), file_type='&lt;dir&gt;', file_size='',
+            fcreated='', fmodified=''))
+
         for item in os.listdir(path):
+            if self.__can_stop: break
             full_item = os.path.join(path, item)
             if os.path.isdir(full_item):
-                folders.append(self.__table_row_tmpl.format(file_name='<a href={0}>{1}</a>'.format(full_item.replace(config.DOCUMENT_ROOT, ''), item),
-                                                            file_type='&lt;dir&gt;', file_size='', fcreated='', fmodified=''))
+                folders.append(self.__table_row_tmpl.format(
+                    file_name='<a href={0}>{1}</a>'.format(urllib2.quote(full_item.replace(config.DOCUMENT_ROOT, '')), item),
+                    file_type='&lt;dir&gt;', file_size='', fcreated='', fmodified=''))
             else:
-                files.append(self.__table_row_tmpl.format(file_name='<a href={0}>{1}</a>'.format(full_item.replace(config.DOCUMENT_ROOT, ''), item),
-                                                          file_type=mimetypes.guess_type(full_item)[0],
-                                                          file_size=self._sizeof_fmt(os.path.getsize(full_item)),
-                                                          fcreated=datetime.datetime.fromtimestamp(os.path.getctime(full_item)).strftime("%d.%m.%Y %H:%M:%S"),
-                                                          fmodified=datetime.datetime.fromtimestamp(os.path.getmtime(full_item)).strftime("%d.%m.%Y %H:%M:%S")))
+                try:
+                    files.append(self.__table_row_tmpl.format(
+                        file_name='<a href={0}>{1}</a>'.format(urllib2.quote(full_item.replace(config.DOCUMENT_ROOT, '')), item),
+                        file_type=self._get_content_type(full_item), file_size=self._sizeof_fmt(os.path.getsize(full_item)),
+                        fcreated=datetime.datetime.fromtimestamp(os.path.getmtime(full_item)).strftime("%d.%m.%Y %H:%M:%S"),
+                        fmodified=datetime.datetime.fromtimestamp(os.path.getctime(full_item)).strftime("%d.%m.%Y %H:%M:%S")))
+                except Exception:
+                    logging.exception('[{0}] Cannot read file "{1}"'.format(self.id, full_item))
 
         folders.extend(files)
         return self.__index_page_tmpl.format(directory=path.replace(config.DOCUMENT_ROOT, ''), tbody='\r\n'.join(folders))
 
     def _wrap_error(self):
         html = self.__error_page_tmpl.format(code=self.response.code, title=self.response.status,
-                                             error_message=self.response.body.replace('\r\n', '<br>').replace('\n', '<br>') if self.response.body else '')
+            error_message=self.response.body.replace('\r\n', '<br>').replace('\n', '<br>') if self.response.body else '')
         self.response.set_headers(self._get_headers())
         self.response.set_header('Content-Type', 'text/html')
         self.response.set_header('Content-Length', len(html))
         self.response.set_body(html)
 
     def _get_content_type(self, file_name):
-        mime_type = mimetypes.guess_type(file_name)[0]
-        return mime_type or 'application/octet-stream'
+        return mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
 
     def _create_file_response(self, method, file_name, file_data=None):
         resp = Response(self.request.protocol, 200, 'OK', headers=self._get_headers())
 
         if not file_data:
-            with open(file_name) as f:
+            with open(file_name, 'rb') as f:
                 file_data = f.read()
 
         resp.set_header('Content-Length', len(file_data))
@@ -248,11 +269,13 @@ class Handler(object):
                 return Response(self.request.protocol, 405, 'Method Not Allowed')
 
             # Действия по get-запросу (на head-запрос все то же, только блок body в response оставляем пустым):
-            # 1. если адрес запроса (uri) - папка: если такой путь есть в document_root и там есть index.html - надо вернуть index.html из нее,
-            # если index нет - вернуть стандартный index (рендерим свой шаблон), который будет содержать ссылки на список файлов и
-            # папок папки, и ссылку на переход в папку верхнего уровня. Если такой папки нет - вернем 404.
-            # 2. если uri - файл: если такой файл есть по этому пути - вернуть содержимое этого файла, при этом правильно определить и передать
-            # его content-type (в т.ч. под эту логику и подпадает условие на счет file.html). Если пути uri не существует - вернуть 404.
+            # 1. если адрес запроса (uri) - папка: если такой путь есть в document_root и там есть index.html -
+            # надо вернуть index.html из нее, если index-а нет - вернуть стандартный index (рендерим свой шаблон),
+            # который будет содержать ссылки на список файлов и папок папки, и ссылку на переход в папку верхнего уровня.
+            # Если такой папки нет - вернем 404.
+            # 2. если uri - файл: если такой файл есть по этому пути - вернуть содержимое этого файла, при этом правильно
+            # определить и передать его content-type (в т.ч. под эту логику и подпадает условие на счет file.html).
+            # Если пути uri не существует - вернуть 404.
             # Параметры запроса игнорируем (по условию задачи).
             path = '{0}{1}'.format(config.DOCUMENT_ROOT, self.request.uri)
             if os.path.exists(path):
@@ -260,19 +283,27 @@ class Handler(object):
                     if os.path.exists(os.path.join(path, 'index.html')):
                         return self._create_file_response(self.request.method, os.path.join(path, 'index.html'))
 
-                    # иначе рендерим свой шаблон index-a, отображающий содержимое папки, и возвращаем его
-                    return self._create_file_response(self.request.method, 'index.html', file_data=self._render_directory_index(path))
+                    return self._create_file_response(self.request.method, 'index.html',
+                                                      file_data=self._render_directory_index(path))
                 else:
                     return self._create_file_response(self.request.method, path)
             else:
                 return Response(self.request.protocol, 404, 'Not Found')
-        except Exception, e:
-            logging.exception('Error on handle request at {0}:{1}'.format(self.client_ip, self.client_port))
+        except Exception as e:
+            logging.exception('[{0}] Error on handle request at {1}:{2}'.format(self.id, self.client_ip, self.client_port))
             return Response('HTTP/1.1', 500, 'Internal Server Error', body=traceback.format_exc() if config.DEBUG else e)
 
     def _read_request(self):
         while not self.__can_stop:
-            data = self.sock.recv(1024)
+            try:
+                data = self.sock.recv(1024)
+            except socket.error as e:
+                if e.errno == errno.WSAEWOULDBLOCK:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    raise
+
             self.raw_request += data
             if len(data) < 1024:
                 break
@@ -284,9 +315,11 @@ class Handler(object):
             if self.response.code != 200:
                 self._wrap_error()
             self.raw_response = str(self.response)
-            logging.info(self.__log_format_str.format(client_ip=self.client_ip, client_port=self.client_port,
+            logging.info(self.__log_format_str.format(thread_id=self.id, client_ip=self.client_ip,
+                                                      client_port=self.client_port,
                                                       method=self.request.method if self.request else 'GET',
-                                                      uri=self.request.uri if self.request else '/', protocol=self.response.protocol,
+                                                      uri=self.request.uri if self.request else '/',
+                                                      protocol=self.response.protocol,
                                                       code=self.response.code, len_response=len(self.raw_response)))
 
     def _send_response(self):
@@ -296,15 +329,18 @@ class Handler(object):
                 break
             self.raw_response = self.raw_response[n:]
 
-    def _close(self):
-        self.sock.close()
-        self.sock = None
+    # def _close(self):
+    #     self.sock.close()
+    #     self.sock = None
 
     def handle_request(self):
-        self._read_request()
-        self._do_work_request()
-        self._send_response()
-        self._close()
+        try:
+            self._read_request()
+            self._do_work_request()
+            self._send_response()
+            #self._close() #  закрывать коннект будем в worker-е, при его очистке
+        except Exception:
+            logging.exception('[{0}] Error on handle request at {1}:{2}'.format(self.id, self.client_ip, self.client_port))
 
     def stop(self):
         self.__can_stop = True

@@ -2,8 +2,9 @@
 
 import logging
 
-
+DEBUG = False
 PORT = 8080
+LISTEN_ADDR = '127.0.0.1'
 
 # INIT_HANDLERS: кол-во дочерних потоков, создаваемых сразу при инициализации сервера -
 # т.е. размер пула обработчиков соединений (workers). Если выставить 0 - обработчики будут инициализироваться при подключении клиента.
@@ -18,13 +19,11 @@ PORT = 8080
 INIT_HANDLERS = 5
 MAX_HANDLERS = 20
 
-DOCUMENT_ROOT = './httptest'
+DOCUMENT_ROOT = '../tests/httptest'
 
 LOGGING = {
     'filename': None,
-    'level': logging.DEBUG,
+    'level': logging.DEBUG if DEBUG else logging.INFO,
     'format': '%(asctime)s %(levelname).1s %(message)s',
     'datefmt': '%Y.%m.%d %H:%M:%S'
 }
-
-DEBUG = True
