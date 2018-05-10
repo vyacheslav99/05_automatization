@@ -5,12 +5,13 @@ import errno
 import logging
 import threading
 
+from handler import Handler, Response
+
 
 class Worker(object):
 
-    def __init__(self, index, HandlerClass):
+    def __init__(self, index):
         self.id = index
-        self.HandlerClass = HandlerClass
         self.__thread = None
         self._reset()
         self.init_thread()
@@ -28,7 +29,7 @@ class Worker(object):
         self.__ready = False
 
         try:
-            self.__handler = self.HandlerClass(self.sock, self.client_ip, self.client_port)
+            self.__handler = Handler(self.sock, self.client_ip, self.client_port)
             self.__handler.handle_request()
         finally:
             logging.info('[{0}] Stopped connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
@@ -68,15 +69,13 @@ class Worker(object):
 
 class HTTPServer(object):
 
-    def __init__(self, host, port, HandlerClass, init_handlers=0, max_handlers=0, document_root=None):
+    def __init__(self, host, port, init_handlers=0, max_handlers=0):
         self.active = False
         self.sock = None
         self.host = host
         self.port = port
-        self.HandlerClass = HandlerClass
         self.init_handlers = init_handlers
         self.max_handlers = max_handlers
-        self.document_root = document_root
         self.wrk_pool = []
         self.wrk_svc_thread = None
 
@@ -96,7 +95,7 @@ class HTTPServer(object):
 
     def _init_workers(self):
         for i in xrange(self.init_handlers):
-            self.wrk_pool.append(Worker(i, self.HandlerClass))
+            self.wrk_pool.append(Worker(i))
 
     def _get_worker(self):
         for wrk in self.wrk_pool:
@@ -104,7 +103,7 @@ class HTTPServer(object):
                 return wrk
 
         if len(self.wrk_pool) < self.max_handlers:
-            self.wrk_pool.append(Worker(len(self.wrk_pool) - 1, self.HandlerClass))
+            self.wrk_pool.append(Worker(len(self.wrk_pool) - 1))
             return self.wrk_pool[-1]
 
         return None
