@@ -2,13 +2,10 @@
 
 import os
 import logging
-import datetime
-import mimetypes
 import traceback
-import urllib2
-import time
-import socket
-import errno
+import datetime, time
+import mimetypes, urllib2
+import socket, errno
 
 import config
 
@@ -89,7 +86,7 @@ class Response(object):
         self._code = code
         self._status = status
         self._headers = headers or {}
-        self._body = body
+        self._body = body or ''
 
     @property
     def protocol(self):
@@ -109,31 +106,36 @@ class Response(object):
 
     @property
     def body(self):
-        return self._body
+        return self._body if isinstance(self._body, str) else str(self._body)
 
-    def set_protocol(self, protocol):
+    @protocol.setter
+    def protocol(self, protocol):
         self._protocol = protocol
 
-    def set_code(self, code):
+    @code.setter
+    def code(self, code):
         self._code = code
 
-    def set_status(self, status):
+    @status.setter
+    def status(self, status):
         self._status = status
+
+    @headers.setter
+    def headers(self, headers):
+        self._headers = dict(headers)
 
     def set_header(self, key, value):
         self._headers[key] = value
 
-    def set_headers(self, headers):
-        self._headers = dict(headers)
-
-    def set_body(self, body):
+    @body.setter
+    def body(self, body):
         self._body = body
 
     def __str__(self):
         data = ['{0} {1} {2}'.format(self._protocol, self._code, self._status)]
         data.extend('{0}: {1}'.format(*head) for head in self._headers.items())
         data.append('')
-        if self._body:
+        if self._body is not None:
             data.append(self._body if isinstance(self._body, str) else str(self._body))
 
         return '\r\n'.join(data)
@@ -160,8 +162,8 @@ class Handler(object):
                                      '<title>{code} {title}</title>', '</head>', '<body>', '<h1>{title}</h1>', '<p>',
                                      '{error_message}', '</p>', '</body>', '</html>'))
 
-    def __init__(self, thread_id, sock, client_ip, client_port):
-        self.id = thread_id
+    def __init__(self, worker_id, sock, client_ip, client_port):
+        self.id = worker_id
         self.__can_stop = False
         self.sock = sock
         self.client_ip = client_ip
@@ -199,6 +201,13 @@ class Handler(object):
             'Connection': 'close'
         }
 
+    def _get_request_method(self):
+        # вытягивает метод из исходной строки запроса, если запрос не удалось распарсить, иначе из запроса
+        if self.request:
+            return self.request.method
+        else:
+            return self.raw_request.split('\r\n')[0].split(' ')[0] or 'GET'
+
     def _render_directory_index(self, path):
         files = []
         folders = []
@@ -207,25 +216,27 @@ class Handler(object):
         if up_path and up_path != '/':
             up_path = os.path.split(up_path)[0]
         folders.append(self.__table_row_tmpl.format(
-            file_name='<a href={0}>{1}</a>'.format(urllib2.quote(up_path) or '/', '..'), file_type='&lt;dir&gt;', file_size='',
+            file_name='<a href={0}>{1}</a>'.format(urllib2.quote(up_path) or '/', '&lt;UP&gt;'), file_type='&lt;dir&gt;', file_size='',
             fcreated='', fmodified=''))
 
         for item in os.listdir(path):
             if self.__can_stop: break
-            full_item = os.path.join(path, item)
-            if os.path.isdir(full_item):
-                folders.append(self.__table_row_tmpl.format(
-                    file_name='<a href={0}>{1}</a>'.format(urllib2.quote(full_item.replace(config.DOCUMENT_ROOT, '')), item),
-                    file_type='&lt;dir&gt;', file_size='', fcreated='', fmodified=''))
-            else:
-                try:
+            try:
+                full_item = os.path.join(path, item).replace('\\', '/')
+                if os.path.isdir(full_item):
+                    folders.append(self.__table_row_tmpl.format(
+                        file_name='<a href={0}>{1}</a>'.format(urllib2.quote(full_item.replace(config.DOCUMENT_ROOT, '')), item),
+                        file_type='&lt;dir&gt;', file_size='',
+                        fcreated=datetime.datetime.fromtimestamp(os.path.getctime(full_item)).strftime("%d.%m.%Y %H:%M:%S"),
+                        fmodified=datetime.datetime.fromtimestamp(os.path.getmtime(full_item)).strftime("%d.%m.%Y %H:%M:%S")))
+                else:
                     files.append(self.__table_row_tmpl.format(
                         file_name='<a href={0}>{1}</a>'.format(urllib2.quote(full_item.replace(config.DOCUMENT_ROOT, '')), item),
                         file_type=self._get_content_type(full_item), file_size=self._sizeof_fmt(os.path.getsize(full_item)),
-                        fcreated=datetime.datetime.fromtimestamp(os.path.getmtime(full_item)).strftime("%d.%m.%Y %H:%M:%S"),
-                        fmodified=datetime.datetime.fromtimestamp(os.path.getctime(full_item)).strftime("%d.%m.%Y %H:%M:%S")))
-                except Exception:
-                    logging.exception('[{0}] Cannot read file "{1}"'.format(self.id, full_item))
+                        fcreated=datetime.datetime.fromtimestamp(os.path.getctime(full_item)).strftime("%d.%m.%Y %H:%M:%S"),
+                        fmodified=datetime.datetime.fromtimestamp(os.path.getmtime(full_item)).strftime("%d.%m.%Y %H:%M:%S")))
+            except Exception:
+                logging.exception('[{0}] Cannot access to file/folder "{1}"'.format(self.id, full_item))
 
         folders.extend(files)
         return self.__index_page_tmpl.format(directory=path.replace(config.DOCUMENT_ROOT, ''), tbody='\r\n'.join(folders))
@@ -233,10 +244,10 @@ class Handler(object):
     def _wrap_error(self):
         html = self.__error_page_tmpl.format(code=self.response.code, title=self.response.status,
             error_message=self.response.body.replace('\r\n', '<br>').replace('\n', '<br>') if self.response.body else '')
-        self.response.set_headers(self._get_headers())
+        self.response.headers = self._get_headers()
         self.response.set_header('Content-Type', 'text/html')
         self.response.set_header('Content-Length', len(html))
-        self.response.set_body(html)
+        self.response.body = html
 
     def _get_content_type(self, file_name):
         return mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
@@ -251,7 +262,7 @@ class Handler(object):
         resp.set_header('Content-Length', len(file_data))
         resp.set_header('Content-Type', self._get_content_type(file_name))
         if method == 'GET':
-            resp.set_body(file_data)
+            resp.body = file_data
 
         return resp
 
@@ -290,8 +301,9 @@ class Handler(object):
             else:
                 return Response(self.request.protocol, 404, 'Not Found')
         except Exception as e:
-            logging.exception('[{0}] Error on handle request at {1}:{2}'.format(self.id, self.client_ip, self.client_port))
-            return Response('HTTP/1.1', 500, 'Internal Server Error', body=traceback.format_exc() if config.DEBUG else e)
+            logging.exception('[{0}] Error on prepare response to {1}:{2}'.format(self.id, self.client_ip, self.client_port))
+            return Response('HTTP/1.1', 500, 'Internal Server Error',
+                body=(traceback.format_exc() if config.DEBUG else e) if self._get_request_method() != 'HEAD' else None)
 
     def _read_request(self):
         while not self.__can_stop:
@@ -312,12 +324,12 @@ class Handler(object):
         self.response = self._create_response()
         if self.response:
             # если response - ошибка, нужно вернуть страницу ошибки (рендерим свой шаблон)
-            if self.response.code != 200:
+            if self.response.code != 200 and self._get_request_method() != 'HEAD':
                 self._wrap_error()
             self.raw_response = str(self.response)
             logging.info(self.__log_format_str.format(thread_id=self.id, client_ip=self.client_ip,
                                                       client_port=self.client_port,
-                                                      method=self.request.method if self.request else 'GET',
+                                                      method=self._get_request_method(),
                                                       uri=self.request.uri if self.request else '/',
                                                       protocol=self.response.protocol,
                                                       code=self.response.code, len_response=len(self.raw_response)))
