@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
-import socket
-import errno
+import socket, errno
 import logging
 import threading
+import datetime, time
 
+import config
 from handler import Handler
 
 
@@ -14,6 +15,7 @@ class Worker(object):
         self.id = index
         self.sock = None
         self.__thread = None
+        self.last_used = datetime.datetime.now()
         self._reset()
         self.init_thread()
 
@@ -24,21 +26,22 @@ class Worker(object):
         self.__stopped = True
 
     def _do_process(self):
-        logging.debug('[{0}] Accepted connection on {1}:{2}'.format(self.__thread.name, self.client_ip, self.client_port))
+        # данный метод вызывается из потока
+        logging.debug('[{0}] Accepted connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))  # format(self.__thread.name, ...
         self.__stopped = False
         self.__ready = False
 
-        self.__handler = Handler(self.__thread.name, self.sock, self.client_ip, self.client_port)
+        self.__handler = Handler(self.id, self.sock, self.client_ip, self.client_port)
         self.__handler.handle_request()
 
-        logging.debug('[{0}] Stopped connection on {1}:{2}'.format(self.__thread.name, self.client_ip, self.client_port))
+        logging.debug('[{0}] Stopped connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
         self._reset()
 
     def init_thread(self):
         self.__thread = threading.Thread(target=self._do_process)
         self.__thread.setDaemon(1)
         self.__ready = True
-        logging.debug('Initialized Thread Name: {0}'.format(self.__thread.name))
+        logging.debug('[{0}] Initialized Thread: {1}'.format(self.id, self.__thread.name))
 
     def accept(self, sock, client_ip, client_port):
         # if not self.is_free():
@@ -51,6 +54,7 @@ class Worker(object):
         try:
             self.__thread.start()
         except RuntimeError:
+            logging.debug('[{0}] Runtime error on Thread: {1}. Reinitializing...'.format(self.id, self.__thread.name if self.__thread else '<null>'))
             self.stop()
             self.init_thread()
 
@@ -104,7 +108,8 @@ class HTTPServer(object):
 
     def _get_worker(self):
         for wrk in self.wrk_pool:
-            if wrk.is_ready():
+            if wrk.is_free() and wrk.is_ready():
+                wrk.last_used = datetime.datetime.now()
                 return wrk
 
         if len(self.wrk_pool) < self.max_handlers:
@@ -118,9 +123,21 @@ class HTTPServer(object):
             if not self.active:
                 break
 
+            # заново создаем поток (т.к. поток не может быть выполнен более 1 раза)
             if wrk.is_free() and not wrk.is_ready():
                 wrk.stop()
                 wrk.init_thread()
+
+        if config.HANDLERS_CLEAN_POLICY != 0:
+            # очистка лишних обработчиков
+            dt = datetime.datetime.now()
+            i = 0
+            while len(self.wrk_pool) > self.init_handlers and i < len(self.wrk_pool):
+                if self.wrk_pool[i].is_free() and (config.HANDLERS_CLEAN_POLICY == 1 or (config.HANDLERS_CLEAN_POLICY == 2 and
+                    dt - self.wrk_pool[i].last_used > datetime.timedelta(minutes=config.HANDLERS_CLEAN_TIME))):
+                    self.wrk_pool.pop(i)
+                else:
+                    i += 1
 
     def _accept_connection(self, sock, client_ip, client_port):
         worker = self._get_worker()
@@ -137,6 +154,7 @@ class HTTPServer(object):
         while self.active:
             try:
                 self._check_workers()
+                time.sleep(1)
             except Exception:
                 logging.exception('Error at service workers!')
 
@@ -157,7 +175,7 @@ class HTTPServer(object):
                 # возврат завершившихся workers в пул вынесем в отдельный поток
                 # self._check_workers()
             except Exception:
-                logging.exception('Error on handle connection at {0}:{1}!'.format(*addr))
+                logging.exception('Error on accept connection at {0}:{1}!'.format(*addr))
 
     def start(self):
         try:
