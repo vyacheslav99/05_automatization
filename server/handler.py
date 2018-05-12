@@ -24,6 +24,7 @@ class Request(object):
 
     def _parse_request_str(self):
         data = self._raw_request.split('\r\n')
+        logging.debug(data[0])
         self._method, self._uri, self._protocol = data[0].split(' ')
 
         uri = self._uri.split('/')
