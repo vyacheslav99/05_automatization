@@ -4,6 +4,7 @@ import socket, errno
 import logging
 import threading
 import datetime, time
+import random
 
 import config
 from handler import Handler
@@ -13,68 +14,73 @@ class Worker(object):
 
     def __init__(self, index):
         self.id = index
-        self.sock = None
-        self.__thread = None
+        self._queue = []
+        self._thread = None
+        self._break = False
+        self._handler = None
+        self._done = True
+        self._locked = False
         self.last_used = datetime.datetime.now()
-        self._reset()
         self.init_thread()
-
-    def _reset(self):
-        self.__handler = None
-        self.client_ip = None
-        self.client_port = None
-        self.__stopped = True
 
     def _do_process(self):
         # данный метод вызывается из потока
-        logging.debug('[{0}] Accepted connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))  # format(self.__thread.name, ...
-        self.__stopped = False
-        self.__ready = False
+        while not self._break:
+            try:
+                client_ip, client_port, sock = self._queue.pop(0)
+            except IndexError:
+                # без замораживания цикл вхолостую будет грузить процессор
+                time.sleep(0.3)
+                continue
 
-        self.__handler = Handler(self.id, self.sock, self.client_ip, self.client_port)
-        self.__handler.handle_request()
+            self._done = False
+            try:
+                logging.debug('[{0}] Accepted connection on {1}:{2}'.format(self.id, client_ip, client_port))
 
-        logging.debug('[{0}] Stopped connection on {1}:{2}'.format(self.id, self.client_ip, self.client_port))
-        self._reset()
+                self._handler = Handler(self.id, sock, client_ip, client_port)
+                self._handler.handle_request()
+            finally:
+                sock.close()
+                self._handler = None
+                self._done = True
+                logging.debug('[{0}] Stopped connection on {1}:{2}'.format(self.id, client_ip, client_port))
 
     def init_thread(self):
-        self.__thread = threading.Thread(target=self._do_process)
-        self.__thread.setDaemon(1)
-        self.__ready = True
-        logging.debug('[{0}] Initialized Thread: {1}'.format(self.id, self.__thread.name))
+        self._thread = threading.Thread(target=self._do_process)
+        self._thread.setDaemon(1)
+        self._thread.start()
+        logging.debug('[{0}] Initialized Thread: {1}'.format(self.id, self._thread.name))
 
     def accept(self, sock, client_ip, client_port):
-        # if not self.is_free():
-        #     raise Exception('Worker {0} not ready to accept connections!'.format(self.__thread.name))
-        self.sock = sock
-        self.client_ip = client_ip
-        self.client_port = client_port
-
-    def start(self):
-        try:
-            self.__thread.start()
-        except RuntimeError:
-            logging.debug('[{0}] Runtime error on Thread: {1}. Reinitializing...'.format(self.id, self.__thread.name if self.__thread else '<null>'))
-            self.stop()
-            self.init_thread()
+        self._queue.append((client_ip, client_port, sock))
 
     def stop(self):
-        if self.__handler:
-            self.__handler.stop()
+        logging.debug('[{0}] Stop worker ({1})'.format(self.id, self._thread.name))
+        self._break = True
 
-        if self.__thread and self.__thread.isAlive():
-            self.__thread.join(3)
+        if self._handler:
+            self._handler.stop()
 
-        if self.sock:
-            self.sock.close()
+        if self._thread and self._thread.isAlive():
+            self._thread.join(3)
 
-        self.__thread = None
+        for conn in self._queue:
+            conn[2].close()
 
     def is_free(self):
-        return self.__stopped
+        return self._done
 
-    def is_ready(self):
-        return self.__ready
+    def is_empty(self):
+        return len(self._queue) > 0
+
+    def lock(self):
+        self._locked = True
+
+    def unlock(self):
+        self._locked = False
+
+    def locked(self):
+        return self._locked
 
 
 class HTTPServer(object):
@@ -107,8 +113,10 @@ class HTTPServer(object):
             self.wrk_pool.append(Worker(i))
 
     def _get_worker(self):
+        # в принципе ничего не мешает все коннекты кидать в очередь одному обработчику, но тогда
+        # никакой параллельности обработки не будет, так что мы этого делать не будем, а находим свободный
         for wrk in self.wrk_pool:
-            if wrk.is_free() and wrk.is_ready():
+            if wrk.is_free() and not wrk.locked():
                 wrk.last_used = datetime.datetime.now()
                 return wrk
 
@@ -116,27 +124,33 @@ class HTTPServer(object):
             self.wrk_pool.append(Worker(len(self.wrk_pool) - 1))
             return self.wrk_pool[-1]
 
-        return None
+        # а вот тут можно поменять концепцию и не сбрасывать коннект, а добавить в очередь любому занятому обработчику,
+        # он его обработает, как только дойдет очередь. В принципе настройку этого поведения можно вынести в конфиг
+        if config.WHEN_REACHED_LIMIT == 0:
+            return None
+        else: # elif config.WHEN_REACHED_LIMIT == 1:
+            logging.debug('Delayed connection: limit connections exceeded')
+            wrk = random.choice(self.wrk_pool)
+            while wrk.locked():
+                wrk = random.choice(self.wrk_pool)
+            return wrk
 
     def _check_workers(self):
-        for wrk in self.wrk_pool:
-            if not self.active:
-                break
-
-            # заново создаем поток (т.к. поток не может быть выполнен более 1 раза)
-            if wrk.is_free() and not wrk.is_ready():
-                wrk.stop()
-                wrk.init_thread()
-
         if config.HANDLERS_CLEAN_POLICY != 0:
-            # очистка лишних обработчиков
+            # очистка лишних обработчиков.
+            # Тут я предвижу необходимость блокировки, т.к. пока проверятся все условия,
+            # есть вероятность, что ему закинут новый коннект...
             dt = datetime.datetime.now()
             i = 0
             while len(self.wrk_pool) > self.init_handlers and i < len(self.wrk_pool):
-                if self.wrk_pool[i].is_free() and (config.HANDLERS_CLEAN_POLICY == 1 or (config.HANDLERS_CLEAN_POLICY == 2 and
+                self.wrk_pool[i].lock()
+                if self.wrk_pool[i].is_free() and self.wrk_pool[i].is_empty() and (
+                    config.HANDLERS_CLEAN_POLICY == 1 or (config.HANDLERS_CLEAN_POLICY == 2 and
                     dt - self.wrk_pool[i].last_used > datetime.timedelta(minutes=config.HANDLERS_CLEAN_TIME))):
-                    self.wrk_pool.pop(i)
+                    wrk = self.wrk_pool.pop(i)
+                    wrk.stop()
                 else:
+                    self.wrk_pool[i].unlock()
                     i += 1
 
     def _accept_connection(self, sock, client_ip, client_port):
@@ -147,7 +161,6 @@ class HTTPServer(object):
             logging.info('Reset connection on {0}:{1}: limit connections exceeded'.format(client_ip, client_port))
         else:
             worker.accept(sock, client_ip, client_port)
-            worker.start()
 
     def _do_wrk_service(self):
         # выполняется в отдельном потоке!
