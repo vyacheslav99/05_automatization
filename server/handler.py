@@ -212,6 +212,7 @@ class Handler(object):
     def _render_directory_index(self, path):
         files = []
         folders = []
+        full_item = ''
 
         up_path = path.replace(config.DOCUMENT_ROOT, '')
         if up_path and up_path != '/':

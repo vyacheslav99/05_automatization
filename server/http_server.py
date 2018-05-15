@@ -113,8 +113,6 @@ class HTTPServer(object):
             self.wrk_pool.append(Worker(i))
 
     def _get_worker(self):
-        # в принципе ничего не мешает все коннекты кидать в очередь одному обработчику, но тогда
-        # никакой параллельности обработки не будет, так что мы этого делать не будем, а находим свободный
         for wrk in self.wrk_pool:
             if wrk.is_free() and not wrk.locked():
                 wrk.last_used = datetime.datetime.now()
