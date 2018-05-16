@@ -257,11 +257,11 @@ class Handler(object):
     def _create_file_response(self, method, file_name, file_data=None):
         resp = Response(self.request.protocol, 200, 'OK', headers=self._get_headers())
 
-        if not file_data:
+        if not file_data and method == 'GET':
             with open(file_name, 'rb') as f:
                 file_data = f.read()
 
-        resp.set_header('Content-Length', len(file_data))
+        resp.set_header('Content-Length', len(file_data) or os.path.getsize(file_name))
         resp.set_header('Content-Type', self._get_content_type(file_name))
         if method == 'GET':
             resp.body = file_data
