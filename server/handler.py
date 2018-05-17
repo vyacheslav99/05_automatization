@@ -261,7 +261,7 @@ class Handler(object):
             with open(file_name, 'rb') as f:
                 file_data = f.read()
 
-        resp.set_header('Content-Length', len(file_data) or os.path.getsize(file_name))
+        resp.set_header('Content-Length', len(file_data) or (os.path.getsize(file_name) if os.path.exists(file_name) else 0))
         resp.set_header('Content-Type', self._get_content_type(file_name))
         if method == 'GET':
             resp.body = file_data
