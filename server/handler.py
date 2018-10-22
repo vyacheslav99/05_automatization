@@ -180,15 +180,15 @@ class Handler(object):
         gb = mb * 1024.0
         tb = gb * 1024.0
         if size <= kb:
-            return str(size) + ' byte(s)'
+            return '{0} byte(s)'.format(str(size))
         elif (size > kb) and (size <= mb):
-            return str(round(size / kb, 2)) + ' Kb'
+            return '{0} Kb'.format(str(round(size / kb, 2)))
         elif (size > mb) and (size <= gb):
-            return str(round(size / mb, 2)) + ' Mb'
+            return '{0} Mb'.format(str(round(size / mb, 2)))
         elif (size > gb) and (size <= tb):
-            return str(round(size / gb, 2)) + ' Gb'
+            return '{0} Gb'.format(str(round(size / gb, 2)))
         elif size > tb:
-            return str(round(size / tb, 2)) + ' Tb'
+            return '{0} Tb'.format(str(round(size / tb, 2)))
         else:
             return str(size)
 
