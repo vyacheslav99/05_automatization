@@ -268,14 +268,14 @@ def main():
     # ap.add_argument('-o', '--output', type=str, action='store', default=None,
     #     help='Destination to write work results. File (must specify the file name in any format) or stdout (default if argument passed)')
     # добавил возможность авторизоваться, т.к. это дает некоторые плюсы - например увеличивает ограничение на кол-во вызовов API сервера...
-    ap.add_argument('-u', '--user', type=str, help='User name for authentication on github.com')
-    ap.add_argument('-p', '--password', type=str, help='Password for authentication on github.com')
-    ap.add_argument('-r', '--repo', type=str, required=True,
+    ap.add_argument('-u', '--user', help='User name for authentication on github.com')
+    ap.add_argument('-p', '--password', help='Password for authentication on github.com')
+    ap.add_argument('-r', '--repo', required=True,
         help='Path of the public repository for report on github (url without prefix "https://github.com", consisting of "username/repository")')
-    ap.add_argument('-b', '--branch', type=str, action='store', help='Repository branch for report, default value "master"')
-    ap.add_argument('-ds', '--date_start', type=str, action='store',
+    ap.add_argument('-b', '--branch', action='store', help='Repository branch for report, default value "master"')
+    ap.add_argument('-ds', '--date_start', action='store',
                     help='Period for report: date start (format d.m.Y). Unlimitedly if argument passed')
-    ap.add_argument('-de', '--date_end', type=str, action='store',
+    ap.add_argument('-de', '--date_end', action='store',
                     help='Period for report: date end (format d.m.Y). Unlimitedly if argument passed')
     args = ap.parse_args()
 
